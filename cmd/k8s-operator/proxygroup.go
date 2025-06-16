@@ -245,7 +245,7 @@ func (r *ProxyGroupReconciler) maybeProvision(ctx context.Context, pg *tsapi.Pro
 	r.ensureAddedToGaugeForProxyGroup(pg)
 	r.mu.Unlock()
 
-	ports := make(map[string]int32)
+	ports := make(map[string]uint16)
 	var targetPort *uint16
 	if proxyClass != nil && proxyClass.Spec.StaticEndpoints != nil {
 		ports, targetPort, err = r.ensureNodePortServiceCreated(ctx, pg, proxyClass, logger)
@@ -385,7 +385,7 @@ func (r *ProxyGroupReconciler) maybeProvision(ctx context.Context, pg *tsapi.Pro
 }
 
 // getServicePortsForProxyGroups checks the NodePorts used for each Kubernetes Service owned by a ProxyGroup
-func getServicePortsForProxyGroups(ctx context.Context, c client.Client, namespace string, usedPorts map[int32]bool) (map[int32]bool, error) {
+func getServicePortsForProxyGroups(ctx context.Context, c client.Client, namespace string, usedPorts map[uint16]bool) (map[uint16]bool, error) {
 	svcs := new(corev1.ServiceList)
 	matchingLabels := client.MatchingLabels(map[string]string{
 		LabelParentType: "proxygroup",
@@ -398,8 +398,8 @@ func getServicePortsForProxyGroups(ctx context.Context, c client.Client, namespa
 
 	for _, svc := range svcs.Items {
 		if len(svc.Spec.Ports) == 1 && svc.Spec.Ports[0].NodePort != 0 {
-			if _, ok := usedPorts[svc.Spec.Ports[0].NodePort]; ok {
-				usedPorts[svc.Spec.Ports[0].NodePort] = true
+			if _, ok := usedPorts[uint16(svc.Spec.Ports[0].NodePort)]; ok {
+				usedPorts[uint16(svc.Spec.Ports[0].NodePort)] = true
 			}
 		}
 	}
@@ -407,15 +407,15 @@ func getServicePortsForProxyGroups(ctx context.Context, c client.Client, namespa
 	return usedPorts, nil
 }
 
-func (r *ProxyGroupReconciler) allocatePorts(ctx context.Context, pg *tsapi.ProxyGroup, proxyClassName string, portRanges []tsapi.PortRange, ports map[string]int32, logger *zap.SugaredLogger) (map[string]int32, error) {
-	usedPorts := make(map[int32]bool)
+func (r *ProxyGroupReconciler) allocatePorts(ctx context.Context, pg *tsapi.ProxyGroup, proxyClassName string, portRanges []tsapi.PortRange, ports map[string]uint16, logger *zap.SugaredLogger) (map[string]uint16, error) {
+	usedPorts := make(map[uint16]bool)
 	for _, r := range portRanges {
 		if r.EndPort == 0 {
-			usedPorts[int32(r.Port)] = false
+			usedPorts[r.Port] = false
 			continue
 		}
 		for p := r.Port; p <= r.EndPort; p++ {
-			usedPorts[int32(p)] = false
+			usedPorts[p] = false
 		}
 	}
 
@@ -455,8 +455,8 @@ func (r *ProxyGroupReconciler) allocatePorts(ctx context.Context, pg *tsapi.Prox
 	return ports, nil
 }
 
-func (r *ProxyGroupReconciler) ensureNodePortServiceCreated(ctx context.Context, pg *tsapi.ProxyGroup, pc *tsapi.ProxyClass, logger *zap.SugaredLogger) (map[string]int32, *uint16, error) {
-	ports := make(map[string]int32)
+func (r *ProxyGroupReconciler) ensureNodePortServiceCreated(ctx context.Context, pg *tsapi.ProxyGroup, pc *tsapi.ProxyClass, logger *zap.SugaredLogger) (map[string]uint16, *uint16, error) {
+	ports := make(map[string]uint16)
 
 	// NOTE: (ChaosInTheCRD) we want the same TargetPort for every static endpoint NodePort Service for the ProxyGroup
 	tailscaledPort := getRandomPort()
@@ -479,7 +479,7 @@ func (r *ProxyGroupReconciler) ensureNodePortServiceCreated(ctx context.Context,
 					tailscaledPort = uint16(svc.Spec.Ports[0].Port)
 				}
 				if svc.Spec.Ports[0].NodePort != 0 {
-					ports[svc.Name] = svc.Spec.Ports[0].NodePort
+					ports[svc.Name] = uint16(svc.Spec.Ports[0].NodePort)
 				}
 			}
 			svcs = append(svcs, svc)
@@ -496,7 +496,7 @@ func (r *ProxyGroupReconciler) ensureNodePortServiceCreated(ctx context.Context,
 		// NOTE: we know that every service is going to have 1 port here
 		svc.Spec.Ports[0].Port = int32(tailscaledPort)
 		svc.Spec.Ports[0].TargetPort = intstr.FromInt(int(tailscaledPort))
-		svc.Spec.Ports[0].NodePort = ports[svc.Name]
+		svc.Spec.Ports[0].NodePort = int32(ports[svc.Name])
 
 		_, err = createOrUpdate(ctx, r.Client, r.tsNamespace, svc, func(s *corev1.Service) {
 			s.ObjectMeta.Labels = svc.ObjectMeta.Labels
@@ -598,7 +598,7 @@ func (r *ProxyGroupReconciler) deleteTailnetDevice(ctx context.Context, id tailc
 	return nil
 }
 
-func (r *ProxyGroupReconciler) ensureConfigSecretsCreated(ctx context.Context, pg *tsapi.ProxyGroup, proxyClass *tsapi.ProxyClass, ports map[string]int32) (hash string, endpoints map[string][]netip.AddrPort, err error) {
+func (r *ProxyGroupReconciler) ensureConfigSecretsCreated(ctx context.Context, pg *tsapi.ProxyGroup, proxyClass *tsapi.ProxyClass, ports map[string]uint16) (hash string, endpoints map[string][]netip.AddrPort, err error) {
 	logger := r.logger(pg.Name)
 	var configSHA256Sum string
 	endpoints = make(map[string][]netip.AddrPort, pgReplicas(pg))

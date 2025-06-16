@@ -51,7 +51,8 @@ const (
 	reasonProxyGroupInvalid        = "ProxyGroupInvalid"
 
 	// Copied from k8s.io/apiserver/pkg/registry/generic/registry/store.go@cccad306d649184bf2a0e319ba830c53f65c445c
-	optimisticLockErrorMsg = "the object has been modified; please apply your changes to the latest version and try again"
+	optimisticLockErrorMsg  = "the object has been modified; please apply your changes to the latest version and try again"
+	staticEndpointsMaxAddrs = 2
 )
 
 var (
@@ -639,7 +640,7 @@ func (r *ProxyGroupReconciler) ensureConfigSecretsCreated(ctx context.Context, p
 				return "", nil, fmt.Errorf("could not find configured NodePort for ProxyGroup replica %q", replicaName)
 			}
 
-			endpoints[replicaName], err = r.findStaticEndpoints(ctx, proxyClass, port, logger)
+			endpoints[replicaName], err = r.findStaticEndpoints(ctx, pg, proxyClass, port, logger)
 			if err != nil {
 				return "", nil, fmt.Errorf("could not find static endpoints for replica %q: %w", replicaName, err)
 			}
@@ -710,7 +711,19 @@ func (e *FindStaticEndpointErr) Error() string {
 	return e.msg
 }
 
-func (r *ProxyGroupReconciler) findStaticEndpoints(ctx context.Context, proxyClass *tsapi.ProxyClass, port int32, logger *zap.SugaredLogger) ([]netip.AddrPort, error) {
+func (r *ProxyGroupReconciler) findStaticEndpoints(ctx context.Context, proxyGroup *tsapi.ProxyGroup, proxyClass *tsapi.ProxyClass, port uint16, logger *zap.SugaredLogger) ([]netip.AddrPort, error) {
+	currIPs := []string{}
+	for _, d := range proxyGroup.Status.Devices {
+		for _, a := range d.StaticEndpoints {
+			addr, err := netip.ParseAddrPort(a)
+			if err != nil {
+				logger.Debugf("failed to parse endpoint in status for ProxyGroup %q", proxyGroup.Name)
+			}
+
+			currIPs = append(currIPs, addr.Addr().String())
+		}
+	}
+
 	nodes := new(corev1.NodeList)
 	selectors := client.MatchingLabels(proxyClass.Spec.StaticEndpoints.NodePort.Selector)
 
@@ -725,16 +738,35 @@ func (r *ProxyGroupReconciler) findStaticEndpoints(ctx context.Context, proxyCla
 
 	endpoints := []netip.AddrPort{}
 
+	// NOTE(ChaosInTheCRD): Setting a hard limit of two static endpoints
+	addrs := []netip.AddrPort{}
 	for _, n := range nodes.Items {
 		for _, a := range n.Status.Addresses {
 			if a.Type == corev1.NodeExternalIP {
-				addrPort := fmt.Sprintf("%s:%d", a.Address, port)
-				i, err := netip.ParseAddrPort(addrPort)
-				if err != nil {
-					logger.Debugf("failed to parse %q address on node %q: %q", corev1.NodeExternalIP, n.Name, addrPort)
+				addr := getStaticEndpointAddress(&a, port)
+				if addr == nil {
+					logger.Debugf("failed to parse %q address on node %q: %q", corev1.NodeExternalIP, n.Name, a.Address)
 					continue
 				}
-				endpoints = append(endpoints, i)
+
+				if slices.Contains(currIPs, addr.String()) {
+					endpoints = append(endpoints, *addr)
+				} else {
+					addrs = append(addrs, *addr)
+				}
+			}
+
+			if len(endpoints) == 2 {
+				break
+			}
+		}
+	}
+
+	if len(endpoints) < 2 {
+		for _, a := range addrs {
+			endpoints = append(endpoints, a)
+			if len(endpoints) == 2 {
+				break
 			}
 		}
 	}
@@ -744,6 +776,15 @@ func (r *ProxyGroupReconciler) findStaticEndpoints(ctx context.Context, proxyCla
 	}
 
 	return endpoints, nil
+}
+
+func getStaticEndpointAddress(a *corev1.NodeAddress, port uint16) *netip.AddrPort {
+	addrPort := fmt.Sprintf("%s:%d", a.Address, port)
+	i, err := netip.ParseAddrPort(addrPort)
+	if err != nil {
+		return nil
+	}
+	return &i
 }
 
 // ensureAddedToGaugeForProxyGroup ensures the gauge metric for the ProxyGroup resource is updated when the ProxyGroup

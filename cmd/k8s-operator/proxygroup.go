@@ -544,6 +544,18 @@ func (r *ProxyGroupReconciler) cleanupDanglingResources(ctx context.Context, pg 
 				return fmt.Errorf("error deleting config Secret %s: %w", configSecret.Name, err)
 			}
 		}
+		// NOTE(ChaosInTheCRD): we shouldn't need to get the service first, checking for a not found error should be enough
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      m.stateSecret.Name,
+				Namespace: m.stateSecret.Namespace,
+			},
+		}
+		if err := r.Delete(ctx, svc); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return fmt.Errorf("error deleting static endpoints Kubernetes Secret %q: %w", svc.Name, err)
+			}
+		}
 	}
 
 	return nil

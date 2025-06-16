@@ -112,8 +112,7 @@ type TailnetDevice struct {
 	// +optional
 	TailnetIPs []string `json:"tailnetIPs,omitempty"`
 
-	// StaticEndpoints are the endpoints `<IP>:<port>` set on the device to facilitate direct
-	// connections
+	// StaticEndpoints are user configured, 'static' endpoints by which tailnet peers can reach this device.
 	// +optional
 	StaticEndpoints []string `json:"staticEndpoints"`
 }

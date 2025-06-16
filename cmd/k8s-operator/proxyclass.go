@@ -189,7 +189,7 @@ func (pcr *ProxyClassReconciler) validate(ctx context.Context, pc *tsapi.ProxyCl
 		}
 
 		if len(stat.NodePort.Selector) < 1 {
-			logger.Debugf("no Selectors specified on `spec.staticEndpoints.nodePort.selectors` field for ProxyClass %q", pc.Name)
+			logger.Debugf("no Selectors specified on `spec.staticEndpoints.nodePort.selectors` field for ProxyClass %q.", pc.Name)
 		}
 	}
 	// We do not validate embedded fields (security context, resource

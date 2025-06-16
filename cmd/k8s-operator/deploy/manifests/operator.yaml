@@ -2683,7 +2683,7 @@ spec:
                                 description: |-
                                     Configuration for 'static endpoints' on proxies in order to facilitate
                                     direct connections from other devices on the tailnet.
-                                    See https://tailscale.com/kb/1445/kubernetes-operator-customization#static-endpoints
+                                    See https://tailscale.com/kb/1445/kubernetes-operator-customization#static-endpoints.
                                 properties:
                                     nodePort:
                                         description: The configuration for static endpoints using NodePort Services.
@@ -2693,8 +2693,8 @@ spec:
                                                     The port ranges from which the operator will select NodePorts for the Services.
                                                     You must ensure that firewall rules allow UDP ingress traffic for these ports
                                                     to the node's external IPs.
-                                                    The ports must be in the range of service node ports for the cluster (default `30000-32767`)
-                                                    https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport
+                                                    The ports must be in the range of service node ports for the cluster (default `30000-32767`).
+                                                    See https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport.
                                                 items:
                                                     properties:
                                                         endPort:
@@ -2715,8 +2715,8 @@ spec:
                                                 additionalProperties:
                                                     type: string
                                                 description: |-
-                                                    A selector which must match a node's labels for the proxies
-                                                    to advertise said node's ExternalIP's to the tailnet as a valid endpoint.
+                                                    A selector which will be used to select the node's that will have their `ExternalIP`'s advertised
+                                                    by the ProxyGroup as Static Endpoints.
                                                 type: object
                                         required:
                                             - ports
@@ -3022,9 +3022,7 @@ spec:
                                                 node.
                                             type: string
                                         staticEndpoints:
-                                            description: |-
-                                                StaticEndpoints are the endpoints `<IP>:<port>` set on the device to facilitate direct
-                                                connections
+                                            description: StaticEndpoints are user configured, 'static' endpoints by which tailnet peers can reach this device.
                                             items:
                                                 type: string
                                             type: array

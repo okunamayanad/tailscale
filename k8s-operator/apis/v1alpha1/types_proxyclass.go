@@ -86,7 +86,7 @@ type ProxyClassSpec struct {
 	UseLetsEncryptStagingEnvironment bool `json:"useLetsEncryptStagingEnvironment,omitempty"`
 	// Configuration for 'static endpoints' on proxies in order to facilitate
 	// direct connections from other devices on the tailnet.
-	// See https://tailscale.com/kb/1445/kubernetes-operator-customization#static-endpoints
+	// See https://tailscale.com/kb/1445/kubernetes-operator-customization#static-endpoints.
 	// +optional
 	StaticEndpoints *StaticEndpointsConfig `json:"staticEndpoints,omitempty"`
 }
@@ -100,12 +100,12 @@ type NodePortConfig struct {
 	// The port ranges from which the operator will select NodePorts for the Services.
 	// You must ensure that firewall rules allow UDP ingress traffic for these ports
 	// to the node's external IPs.
-	// The ports must be in the range of service node ports for the cluster (default `30000-32767`)
-	// https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport
+	// The ports must be in the range of service node ports for the cluster (default `30000-32767`).
+	// See https://kubernetes.io/docs/concepts/services-networking/service/#type-nodeport.
 	// +kubebuilder:validation:MinItems=1
 	Ports []PortRange `json:"ports"`
-	// A selector which must match a node's labels for the proxies
-	// to advertise said node's ExternalIP's to the tailnet as a valid endpoint.
+	// A selector which will be used to select the node's that will have their `ExternalIP`'s advertised
+	// by the ProxyGroup as Static Endpoints.
 	Selector map[string]string `json:"selector,omitempty"`
 }
 
@@ -125,7 +125,7 @@ func (pr PortRange) Contains(port uint16) bool {
 	return port >= pr.Port && port <= pr.EndPort
 }
 
-// String returns the PortRange in a string form
+// String returns the PortRange in a string form.
 func (pr PortRange) String() string {
 	if pr.EndPort == 0 {
 		return fmt.Sprintf("%d", pr.Port)
@@ -134,7 +134,7 @@ func (pr PortRange) String() string {
 	return fmt.Sprintf("%d-%d", pr.Port, pr.EndPort)
 }
 
-// IsValid reports whether the port range is valid
+// IsValid reports whether the port range is valid.
 func (pr PortRange) IsValid() bool {
 	if pr.Port == 0 {
 		return false

@@ -341,9 +341,9 @@ type Conn struct {
 	netInfoLast *tailcfg.NetInfo
 
 	derpMap          *tailcfg.DERPMap              // nil (or zero regions/nodes) means DERP is disabled
-	peers            views.Slice[tailcfg.NodeView] // from last SetNetworkMap update
-	lastFlags        debugFlags                    // at time of last SetNetworkMap
-	firstAddrForTest netip.Addr                    // from last SetNetworkMap update; for tests only
+	peers            views.Slice[tailcfg.NodeView] // from last onNodeViewsUpdate update
+	lastFlags        debugFlags                    // at time of last onNodeViewsUpdate
+	firstAddrForTest netip.Addr                    // from last onNodeViewsUpdate update; for tests only
 	privateKey       key.NodePrivate               // WireGuard private key for this node
 	everHadKey       bool                          // whether we ever had a non-zero private key
 	myDerp           int                           // nearest DERP region ID; 0 means none/unknown
@@ -411,10 +411,8 @@ func (c *Conn) dlogf(format string, a ...any) {
 // Options contains options for Listen.
 type Options struct {
 	// EventBus, if non-nil, is used for event publication and subscription by
-	// each Conn created from these Options.
-	//
-	// TODO(creachadair): As of 2025-03-19 this is optional, but is intended to
-	// become required non-nil.
+	// each Conn created from these Options. It must not be nil outside of
+	// tests.
 	EventBus *eventbus.Bus
 
 	// Logf provides a log function to use. It must not be nil.
@@ -503,20 +501,21 @@ func (o *Options) derpActiveFunc() func() {
 	return o.DERPActiveFunc
 }
 
-// NodeAddrsHostInfoUpdate represents an update event of the addresses and
-// [tailcfg.HostInfoView] for a node set. This event is published over an
-// [eventbus.Bus]. [magicsock.Conn] is the sole subscriber as of 2025-06. If
-// you are adding more subscribers consider moving this type out of magicsock.
-type NodeAddrsHostInfoUpdate struct {
-	NodesByID map[tailcfg.NodeID]NodeAddrsHostInfo
-	Complete  bool // true if NodesByID contains all known nodes, false if it may be a subset
+// NodeViewsUpdate represents an update event of [tailcfg.NodeView] for all
+// nodes. This event is published over an [eventbus.Bus]. [magicsock.Conn] is
+// the sole subscriber as of 2025-06. If you are adding more subscribers
+// consider moving this type out of magicsock.
+type NodeViewsUpdate struct {
+	SelfNode tailcfg.NodeView
+	Peers    []tailcfg.NodeView
 }
 
-// NodeAddrsHostInfo represents the addresses and [tailcfg.HostinfoView] for a
-// Tailscale node.
-type NodeAddrsHostInfo struct {
-	Addresses views.Slice[netip.Prefix]
-	Hostinfo  tailcfg.HostinfoView
+// NodeMutationsUpdate represents an update event of one or more
+// [netmap.NodeMutation]. This event is published over an [eventbus.Bus].
+// [magicsock.Conn] is the sole subscriber as of 2025-06. If you are adding more
+// subscribers consider moving this type out of magicsock.
+type NodeMutationsUpdate struct {
+	Mutations []netmap.NodeMutation
 }
 
 // FilterUpdate represents an update event for a [*filter.Filter]. This event is
@@ -592,11 +591,6 @@ func NewConn(opts Options) (*Conn, error) {
 	c.testOnlyPacketListener = opts.TestOnlyPacketListener
 	c.noteRecvActivity = opts.NoteRecvActivity
 
-	// If an event bus is enabled, subscribe to portmapping changes; otherwise
-	// use the callback mechanism of portmapper.Client.
-	//
-	// TODO(creachadair): Remove the switch once the event bus is mandatory.
-	onPortMapChanged := c.onPortMapChanged
 	if c.eventBus != nil {
 		c.eventClient = c.eventBus.Client("magicsock.Conn")
 
@@ -605,16 +599,11 @@ func NewConn(opts Options) (*Conn, error) {
 			c.onPortMapChanged()
 		})
 		filterSub := eventbus.Subscribe[FilterUpdate](c.eventClient)
-		go consumeEventbusTopic(filterSub, func(t FilterUpdate) {
-			// TODO(jwhited): implement
-		})
-		nodeSub := eventbus.Subscribe[NodeAddrsHostInfoUpdate](c.eventClient)
-		go consumeEventbusTopic(nodeSub, func(t NodeAddrsHostInfoUpdate) {
-			// TODO(jwhited): implement
-		})
-
-		// Disable the explicit callback from the portmapper, the subscriber handles it.
-		onPortMapChanged = nil
+		go consumeEventbusTopic(filterSub, c.onFilterUpdate)
+		nodeViewsSub := eventbus.Subscribe[NodeViewsUpdate](c.eventClient)
+		go consumeEventbusTopic(nodeViewsSub, c.onNodeViewsUpdate)
+		nodeMutsSub := eventbus.Subscribe[NodeMutationsUpdate](c.eventClient)
+		go consumeEventbusTopic(nodeMutsSub, c.onNodeMutationsUpdate)
 	}
 
 	// Don't log the same log messages possibly every few seconds in our
@@ -630,7 +619,6 @@ func NewConn(opts Options) (*Conn, error) {
 		NetMon:       opts.NetMon,
 		DebugKnobs:   portMapOpts,
 		ControlKnobs: opts.ControlKnobs,
-		OnChange:     onPortMapChanged,
 	})
 	c.portMapper.SetGatewayLookupFunc(opts.NetMon.GatewayAndSelfIP)
 	c.netMon = opts.NetMon
@@ -2551,12 +2539,13 @@ func capVerIsRelayCapable(version tailcfg.CapabilityVersion) bool {
 	return false
 }
 
-// SetNetworkMap is called when the control client gets a new network
-// map from the control server. It must always be non-nil.
-//
-// It should not use the DERPMap field of NetworkMap; that's
-// conditionally sent to SetDERPMap instead.
-func (c *Conn) SetNetworkMap(nm *netmap.NetworkMap) {
+func (c *Conn) onFilterUpdate(f FilterUpdate) {
+	// TODO(jwhited): implement
+}
+
+// onNodeViewsUpdate is called when a [NodeViewsUpdate] is received over the
+// [eventbus.Bus].
+func (c *Conn) onNodeViewsUpdate(update NodeViewsUpdate) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -2565,15 +2554,15 @@ func (c *Conn) SetNetworkMap(nm *netmap.NetworkMap) {
 	}
 
 	priorPeers := c.peers
-	metricNumPeers.Set(int64(len(nm.Peers)))
+	metricNumPeers.Set(int64(len(update.Peers)))
 
 	// Update c.netMap regardless, before the following early return.
-	curPeers := views.SliceOf(nm.Peers)
+	curPeers := views.SliceOf(update.Peers)
 	c.peers = curPeers
 
 	flags := c.debugFlagsLocked()
-	if addrs := nm.GetAddresses(); addrs.Len() > 0 {
-		c.firstAddrForTest = addrs.At(0).Addr()
+	if update.SelfNode.Valid() && update.SelfNode.Addresses().Len() > 0 {
+		c.firstAddrForTest = update.SelfNode.Addresses().At(0).Addr()
 	} else {
 		c.firstAddrForTest = netip.Addr{}
 	}
@@ -2588,16 +2577,16 @@ func (c *Conn) SetNetworkMap(nm *netmap.NetworkMap) {
 
 	c.lastFlags = flags
 
-	c.logf("[v1] magicsock: got updated network map; %d peers", len(nm.Peers))
+	c.logf("[v1] magicsock: got updated network map; %d peers", len(update.Peers))
 
-	entriesPerBuffer := debugRingBufferSize(len(nm.Peers))
+	entriesPerBuffer := debugRingBufferSize(len(update.Peers))
 
 	// Try a pass of just upserting nodes and creating missing
 	// endpoints. If the set of nodes is the same, this is an
 	// efficient alloc-free update. If the set of nodes is different,
 	// we'll fall through to the next pass, which allocates but can
 	// handle full set updates.
-	for _, n := range nm.Peers {
+	for _, n := range update.Peers {
 		if n.ID() == 0 {
 			devPanicf("node with zero ID")
 			continue
@@ -2697,14 +2686,14 @@ func (c *Conn) SetNetworkMap(nm *netmap.NetworkMap) {
 		c.peerMap.upsertEndpoint(ep, key.DiscoPublic{})
 	}
 
-	// If the set of nodes changed since the last SetNetworkMap, the
+	// If the set of nodes changed since the last onNodeViewsUpdate, the
 	// upsert loop just above made c.peerMap contain the union of the
 	// old and new peers - which will be larger than the set from the
 	// current netmap. If that happens, go through the allocful
 	// deletion path to clean up moribund nodes.
-	if c.peerMap.nodeCount() != len(nm.Peers) {
+	if c.peerMap.nodeCount() != len(update.Peers) {
 		keep := set.Set[key.NodePublic]{}
-		for _, n := range nm.Peers {
+		for _, n := range update.Peers {
 			keep.Add(n.Key())
 		}
 		c.peerMap.forEachEndpoint(func(ep *endpoint) {
@@ -3233,12 +3222,13 @@ func simpleDur(d time.Duration) time.Duration {
 	return d.Round(time.Minute)
 }
 
-// UpdateNetmapDelta implements controlclient.NetmapDeltaUpdater.
-func (c *Conn) UpdateNetmapDelta(muts []netmap.NodeMutation) (handled bool) {
+// onNodeMutationsUpdate is called when a [NodeMutationsUpdate] is received over
+// the [eventbus.Bus].
+func (c *Conn) onNodeMutationsUpdate(update NodeMutationsUpdate) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for _, m := range muts {
+	for _, m := range update.Mutations {
 		nodeID := m.NodeIDBeingMutated()
 		ep, ok := c.peerMap.endpointForNodeID(nodeID)
 		if !ok {
@@ -3257,7 +3247,6 @@ func (c *Conn) UpdateNetmapDelta(muts []netmap.NodeMutation) (handled bool) {
 			ep.mu.Unlock()
 		}
 	}
-	return true
 }
 
 // UpdateStatus implements the interface nede by ipnstate.StatusBuilder.
